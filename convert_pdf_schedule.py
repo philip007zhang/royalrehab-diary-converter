@@ -74,7 +74,7 @@ def build_ics(events: Iterable[ScheduleEvent], timezone: str = "UTC") -> str:
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//RoyalRehab//Diary Converter//EN",
+        "PRODID:-//Royal Rehab//Diary Converter//EN",
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
     ]
