@@ -2,6 +2,8 @@ server.log
 server.err.log
 node_modules/
 eng.traineddata
+*.png
+*.pdf
 *.tmp
 *.temp
 Thumbs.db
