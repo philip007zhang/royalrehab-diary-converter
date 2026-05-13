@@ -1,0 +1,8 @@
+server.log
+server.err.log
+node_modules/
+eng.traineddata
+*.tmp
+*.temp
+Thumbs.db
+.DS_Store

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Royal Rehab Schedule Converter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script defer src="https://apis.google.com/js/api.js"></script>
+    <script defer src="https://accounts.google.com/gsi/client"></script>
+    <script type="module" defer src="/app.js"></script>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero card">
+        <div class="hero-copy">
+          <p class="eyebrow">Node.js Schedule Converter</p>
+          <h1>Diary converter (RH)</h1>
+          <p class="lede">
+            Upload a schedule image, let OCR extract the appointments, review the rows, then download
+            ready-to-import <code>.ics</code>, CSV, or JSON files.
+          </p>
+        </div>
+        <div class="hero-chipset">
+          <span>OCR in browser</span>
+          <span>Editable before export</span>
+          <span>ICS + CSV + JSON</span>
+        </div>
+      </section>
+
+      <section class="workspace">
+        <div class="left-column">
+          <section class="card">
+            <div class="section-head">
+              <h2>1. Upload</h2>
+              <button id="use-sample-btn" class="ghost-button" type="button">Use bundled sample</button>
+            </div>
+
+            <label id="dropzone" class="dropzone" for="file-input">
+              <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+              <div class="dropzone-copy">
+                <span id="dropzone-title" class="dropzone-title">Drop a schedule image here</span>
+                <span id="dropzone-subtitle" class="dropzone-subtitle">or click to browse PNG, JPG, WEBP, or BMP</span>
+              </div>
+              <div id="dropzone-preview" class="dropzone-preview empty">
+                <img id="preview-image" alt="Uploaded schedule preview" />
+                <span id="image-placeholder">Your uploaded schedule preview will appear here.</span>
+              </div>
+            </label>
+
+            <div class="action-row">
+              <button id="extract-btn" class="primary-button" type="button">Extract schedule</button>
+            </div>
+
+            <div id="status-panel" class="status-panel idle">
+              <strong id="status-title">Ready</strong>
+              <p id="status-text">Load a Royal Rehab diary image to start the OCR pass.</p>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-head">
+              <h2>2. Calendar Settings</h2>
+              <span id="file-pill" class="pill">No file loaded</span>
+            </div>
+            <div class="meta-grid">
+              <label>
+                <span>Calendar title</span>
+                <input id="calendar-title" type="text" value="Royal Rehab Schedule" />
+              </label>
+              <label>
+                <span>Timezone</span>
+                <input id="calendar-timezone" type="text" value="Australia/Sydney" />
+              </label>
+              <label>
+                <span>Patient name</span>
+                <input id="patient-name" type="text" value="" />
+              </label>
+              <label>
+                <span>MRN</span>
+                <input id="patient-mrn" type="text" value="" />
+              </label>
+            </div>
+          </section>
+        </div>
+
+        <div class="right-column">
+          <section class="card">
+            <div class="section-head">
+              <h2>3. Review Extracted Sessions</h2>
+              <div class="action-row compact">
+                <label class="select-all-toggle" for="select-all-checkbox">
+                  <input id="select-all-checkbox" type="checkbox" />
+                  <span>Select all</span>
+                </label>
+                <select id="calendar-provider" aria-label="Calendar provider">
+                  <option value="google">Google Calendar</option>
+                  <option value="outlook">Outlook Calendar</option>
+                </select>
+                <button id="google-connect-btn" class="ghost-button" type="button">Connect Google</button>
+                <span id="google-status-pill" class="pill google-status">Google fallback: ICS import</span>
+                <button id="add-calendar-btn" class="primary-button" type="button" disabled>Prepare selected</button>
+                <button id="add-row-btn" class="ghost-button" type="button">Add row</button>
+                <button id="download-ics-btn" class="primary-button" type="button" disabled>Download ICS</button>
+                <button id="download-csv-btn" class="ghost-button" type="button" disabled>Download CSV</button>
+                <button id="download-json-btn" class="ghost-button" type="button" disabled>Download JSON</button>
+              </div>
+            </div>
+            <p class="calendar-hint">
+              Selected appointments will be packaged into one calendar file so you can import them in one go.
+            </p>
+            <div class="selected-batch">
+              <div class="selected-batch-head">
+                <strong id="selected-count-label">0 selected</strong>
+                <span id="selected-provider-hint">Google Calendar batch import</span>
+              </div>
+              <ul id="selected-list" class="selected-list">
+                <li>No appointments selected yet.</li>
+              </ul>
+            </div>
+
+            <div class="stats-grid">
+              <article class="stat-card">
+                <span class="stat-label">Sessions</span>
+                <strong id="sessions-count">0</strong>
+              </article>
+              <article class="stat-card">
+                <span class="stat-label">First appointment</span>
+                <strong id="first-appointment">-</strong>
+              </article>
+              <article class="stat-card">
+                <span class="stat-label">Last appointment</span>
+                <strong id="last-appointment">-</strong>
+              </article>
+            </div>
+
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th class="row-select-header">Select</th>
+                    <th>Date</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Therapist / Session</th>
+                    <th>Location</th>
+                    <th>Procedure</th>
+                    <th>Calendar title</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="rows-body">
+                  <tr class="empty-row">
+                    <td colspan="9">No sessions extracted yet.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card">
+            <details>
+              <summary>Raw OCR text</summary>
+              <pre id="ocr-text">No OCR data yet.</pre>
+            </details>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "royalrehab-schedule-converter",
+  "version": "1.0.0",
+  "description": "Upload a Royal Rehab schedule image and export it as ICS, CSV, or JSON.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  }
+}
