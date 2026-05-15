@@ -1,16 +1,19 @@
 const state = {
   sourceFile: null,
   sourceName: "",
-  imageUrl: "",
+  previewUrl: "",
+  sourceKind: "",
+  sourcePageCount: 0,
   rows: [],
   ocrText: "",
   googleCalendar: {
-    apiKey: "",
     clientId: "",
     enabled: false,
     ready: false,
     connected: false,
-    tokenClient: null
+    tokenClient: null,
+    accessToken: "",
+    tokenExpiresAt: 0
   },
   metadata: {
     calendarTitle: "Royal Rehab Schedule",
@@ -65,6 +68,41 @@ const dateFormatter = new Intl.DateTimeFormat("en-AU", {
 bindEvents();
 render();
 void initGoogleCalendarSupport();
+
+async function logAuditEvent(activity, status, details = {}) {
+  try {
+    await fetch("/api/audit-events", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ activity, status, details })
+    });
+  } catch (error) {
+    console.error("Audit logging failed", error);
+  }
+}
+
+function generateClientId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Math.floor(Math.random() * 256);
+    }
+  }
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function bindEvents() {
   elements.fileInput.addEventListener("change", async (event) => {
@@ -201,7 +239,6 @@ async function initGoogleCalendarSupport() {
 
     const config = await response.json();
     state.googleCalendar.enabled = Boolean(config.enabled);
-    state.googleCalendar.apiKey = String(config.apiKey ?? "");
     state.googleCalendar.clientId = String(config.clientId ?? "");
 
     if (!state.googleCalendar.enabled) {
@@ -209,21 +246,14 @@ async function initGoogleCalendarSupport() {
       return;
     }
 
-    await waitForGoogleScripts();
-    await initGoogleCalendarClient();
+    await waitForGlobal("google");
+    initGoogleCalendarClient();
   } catch (error) {
     console.error(error);
   } finally {
     syncGoogleCalendarUi();
     syncCalendarActionLabel();
   }
-}
-
-async function waitForGoogleScripts() {
-  await Promise.all([
-    waitForGlobal("gapi"),
-    waitForGlobal("google")
-  ]);
 }
 
 function waitForGlobal(name, timeoutMs = 15000) {
@@ -248,19 +278,7 @@ function waitForGlobal(name, timeoutMs = 15000) {
   });
 }
 
-async function initGoogleCalendarClient() {
-  await new Promise((resolve, reject) => {
-    window.gapi.load("client", {
-      callback: resolve,
-      onerror: () => reject(new Error("Google API client failed to load"))
-    });
-  });
-
-  await window.gapi.client.init({
-    apiKey: state.googleCalendar.apiKey,
-    discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"]
-  });
-
+function initGoogleCalendarClient() {
   state.googleCalendar.tokenClient = window.google.accounts.oauth2.initTokenClient({
     client_id: state.googleCalendar.clientId,
     scope: "https://www.googleapis.com/auth/calendar.events",
@@ -279,35 +297,73 @@ async function useBundledSample() {
 }
 
 async function loadFile(file) {
-  if (!file.type.startsWith("image/")) {
-    setStatus("error", "Unsupported file", "This version expects an image export such as PNG or JPG.");
+  if (!isSupportedSourceFile(file)) {
+    setStatus("error", "Unsupported file", "Use a PNG, JPG, WEBP, BMP, or PDF diary export.");
     return;
   }
 
+  const isPdf = isPdfFile(file);
   state.sourceFile = file;
   state.sourceName = file.name.replace(/\.[^.]+$/, "");
+  state.sourceKind = isPdf ? "pdf" : "image";
+  state.sourcePageCount = 1;
   state.rows = [];
   state.ocrText = "";
 
-  if (state.imageUrl) {
-    URL.revokeObjectURL(state.imageUrl);
+  if (state.previewUrl) {
+    URL.revokeObjectURL(state.previewUrl);
   }
 
-  state.imageUrl = URL.createObjectURL(file);
-  elements.previewImage.src = state.imageUrl;
+  let previewUrl = "";
+  let pageCount = 1;
+
+  try {
+    if (isPdf) {
+      const pdfPreview = await buildPdfPreview(file);
+      previewUrl = pdfPreview.previewUrl;
+      pageCount = pdfPreview.pageCount;
+    } else {
+      previewUrl = URL.createObjectURL(file);
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      "error",
+      "Preview failed",
+      error instanceof Error ? error.message : "The file preview could not be prepared."
+    );
+    return;
+  }
+
+  state.previewUrl = previewUrl;
+  state.sourcePageCount = pageCount;
+  elements.previewImage.src = state.previewUrl;
   elements.dropzonePreview.classList.add("has-image");
-  elements.filePill.textContent = file.name;
+  elements.filePill.textContent = isPdf && pageCount > 1 ? `${file.name} (${pageCount} pages)` : file.name;
   elements.ocrText.textContent = "No OCR data yet.";
   elements.dropzone.classList.add("loaded");
-  elements.dropzoneTitle.textContent = "Image uploaded successfully";
-  elements.dropzoneSubtitle.textContent = file.name;
-  setStatus("idle", "File loaded", "The image is ready. Start extraction when you're ready.");
+  elements.dropzoneTitle.textContent = `${isPdf ? "PDF" : "Image"} uploaded successfully`;
+  elements.dropzoneSubtitle.textContent = isPdf && pageCount > 1 ? `${file.name} · ${pageCount} pages` : file.name;
+  setStatus(
+    "idle",
+    "File loaded",
+    isPdf
+      ? `The PDF is ready. OCR will scan ${pageCount} page${pageCount === 1 ? "" : "s"} when you start extraction.`
+      : "The image is ready. Start extraction when you're ready."
+  );
+  void logAuditEvent("image_loaded", "success", {
+    fileName: file.name,
+    fileType: file.type,
+    sizeBytes: file.size,
+    sourceKind: state.sourceKind,
+    pageCount: state.sourcePageCount
+  });
   render();
 }
 
 async function extractSchedule() {
   if (!state.sourceFile) {
-    setStatus("error", "No file loaded", "Choose a schedule image first.");
+    setStatus("error", "No file loaded", "Choose a schedule image or PDF first.");
     return;
   }
 
@@ -322,7 +378,6 @@ async function extractSchedule() {
   let worker;
 
   try {
-    const processedCanvas = await preprocessImage(state.sourceFile);
     worker = await window.Tesseract.createWorker("eng", 1, {
       logger: (message) => {
         if (message.status && typeof message.progress === "number") {
@@ -336,12 +391,13 @@ async function extractSchedule() {
       }
     });
 
-    const result = await worker.recognize(processedCanvas, {}, { text: true, blocks: true });
-    state.ocrText = result.data.text.trim() || "No OCR text returned.";
-    elements.ocrText.textContent = state.ocrText;
+    const extraction = state.sourceKind === "pdf"
+      ? await extractFromPdf(worker, state.sourceFile)
+      : await extractFromImage(worker, state.sourceFile);
 
-    const parsed = parseScheduleFromOcr(result.data, processedCanvas.width, processedCanvas.height);
-    state.rows = parsed.rows.map((row) => ({
+    state.ocrText = extraction.ocrText || "No OCR text returned.";
+    elements.ocrText.textContent = state.ocrText;
+    state.rows = extraction.rows.map((row) => ({
       ...row,
       generatedSummary: row.summary,
       selected: row.selected ?? true
@@ -349,20 +405,33 @@ async function extractSchedule() {
 
     state.metadata = {
       ...state.metadata,
-      ...parsed.metadata,
-      calendarTitle: parsed.metadata.calendarTitle || state.metadata.calendarTitle || "Royal Rehab Schedule",
+      ...extraction.metadata,
+      calendarTitle: extraction.metadata.calendarTitle || state.metadata.calendarTitle || "Royal Rehab Schedule",
       timezone: state.metadata.timezone || "Australia/Sydney"
     };
 
     syncMetadataInputs();
 
     if (state.rows.length === 0) {
+      void logAuditEvent("ocr_extraction", "warning", {
+        fileName: state.sourceFile?.name ?? "",
+        rowsFound: 0,
+        sourceKind: state.sourceKind,
+        pageCount: state.sourcePageCount
+      });
       setStatus(
         "error",
         "No sessions found",
         "OCR ran, but no appointment rows were confidently parsed. You can still add rows manually."
       );
     } else {
+      void logAuditEvent("ocr_extraction", "success", {
+        fileName: state.sourceFile?.name ?? "",
+        rowsFound: state.rows.length,
+        patientName: state.metadata.patientName,
+        sourceKind: state.sourceKind,
+        pageCount: state.sourcePageCount
+      });
       setStatus(
         "success",
         "Extraction complete",
@@ -371,6 +440,12 @@ async function extractSchedule() {
     }
   } catch (error) {
     console.error(error);
+    void logAuditEvent("ocr_extraction", "error", {
+      fileName: state.sourceFile?.name ?? "",
+      message: error instanceof Error ? error.message : "Unexpected OCR error",
+      sourceKind: state.sourceKind,
+      pageCount: state.sourcePageCount
+    });
     setStatus("error", "Extraction failed", error instanceof Error ? error.message : "Unexpected OCR error.");
   } finally {
     if (worker) {
@@ -381,18 +456,158 @@ async function extractSchedule() {
   }
 }
 
-async function preprocessImage(file) {
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.max(1.6, Math.min(2.1, 1900 / bitmap.width));
+function isSupportedSourceFile(file) {
+  return file.type.startsWith("image/") || isPdfFile(file);
+}
+
+function isPdfFile(file) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
+async function buildPdfPreview(file) {
+  const pdfDocument = await loadPdfDocument(file);
+  try {
+    const firstPage = await pdfDocument.getPage(1);
+    const previewCanvas = await renderPdfPageToCanvas(firstPage, 1100);
+    return {
+      previewUrl: await canvasToObjectUrl(previewCanvas),
+      pageCount: pdfDocument.numPages
+    };
+  } finally {
+    await pdfDocument.destroy();
+  }
+}
+
+async function extractFromImage(worker, file) {
+  const processedCanvas = await preprocessImageFile(file);
+  const result = await worker.recognize(processedCanvas, {}, { text: true, blocks: true });
+  const parsed = parseScheduleFromOcr(result.data, processedCanvas.width, processedCanvas.height);
+
+  return {
+    metadata: parsed.metadata,
+    ocrText: result.data.text.trim(),
+    rows: parsed.rows
+  };
+}
+
+async function extractFromPdf(worker, file) {
+  const pdfDocument = await loadPdfDocument(file);
+  const rows = [];
+  const ocrParts = [];
+  let metadata = {};
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      setStatus(
+        "processing",
+        "Preparing PDF",
+        `Rendering page ${pageNumber} of ${pdfDocument.numPages} for OCR.`
+      );
+
+      const page = await pdfDocument.getPage(pageNumber);
+      const renderedCanvas = await renderPdfPageToCanvas(page, 1800);
+      const processedCanvas = await preprocessCanvas(renderedCanvas);
+      const result = await worker.recognize(processedCanvas, {}, { text: true, blocks: true });
+      const parsed = parseScheduleFromOcr(result.data, processedCanvas.width, processedCanvas.height);
+
+      if (result.data.text?.trim()) {
+        ocrParts.push(
+          pdfDocument.numPages > 1
+            ? `--- Page ${pageNumber} ---\n${result.data.text.trim()}`
+            : result.data.text.trim()
+        );
+      }
+
+      if (!metadata.patientName && parsed.metadata.patientName) {
+        metadata = { ...metadata, patientName: parsed.metadata.patientName };
+      }
+      if (!metadata.mrn && parsed.metadata.mrn) {
+        metadata = { ...metadata, mrn: parsed.metadata.mrn };
+      }
+      if (!metadata.calendarTitle && parsed.metadata.calendarTitle) {
+        metadata = { ...metadata, calendarTitle: parsed.metadata.calendarTitle };
+      }
+
+      rows.push(...parsed.rows);
+    }
+  } finally {
+    await pdfDocument.destroy();
+  }
+
+  return {
+    metadata,
+    ocrText: ocrParts.join("\n\n").trim(),
+    rows: dedupeRows(rows)
+  };
+}
+
+async function loadPdfDocument(file) {
+  const pdfjs = await ensurePdfJsReady();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  return pdfjs.getDocument({ data: bytes }).promise;
+}
+
+async function ensurePdfJsReady() {
+  const pdfjs = await waitForGlobal("pdfjsLib");
+  if (!pdfjs.GlobalWorkerOptions.workerSrc) {
+    pdfjs.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  }
+  return pdfjs;
+}
+
+async function renderPdfPageToCanvas(page, targetWidth) {
+  const initialViewport = page.getViewport({ scale: 1 });
+  const scale = Math.max(1.25, targetWidth / Math.max(initialViewport.width, 1));
+  const viewport = page.getViewport({ scale });
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: context, viewport }).promise;
+  return canvas;
+}
+
+async function canvasToObjectUrl(canvas) {
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((value) => {
+      if (value) {
+        resolve(value);
+      } else {
+        reject(new Error("Canvas preview could not be created."));
+      }
+    }, "image/png");
+  });
+
+  return URL.createObjectURL(blob);
+}
+
+async function preprocessImageFile(file) {
+  const bitmap = await createImageBitmap(file);
+  try {
+    return await preprocessDrawable(bitmap, bitmap.width, bitmap.height);
+  } finally {
+    bitmap.close();
+  }
+}
+
+async function preprocessCanvas(sourceCanvas) {
+  return preprocessDrawable(sourceCanvas, sourceCanvas.width, sourceCanvas.height);
+}
+
+async function preprocessDrawable(source, sourceWidth, sourceHeight) {
+  const scale = Math.max(1.6, Math.min(2.1, 1900 / sourceWidth));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(sourceWidth * scale);
+  canvas.height = Math.round(sourceHeight * scale);
   const context = canvas.getContext("2d", { willReadFrequently: true });
 
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.filter = "grayscale(1) contrast(1.8) brightness(1.12)";
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
   context.filter = "none";
 
   const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -651,7 +866,7 @@ function parseRow(words, edges) {
   const procedure = cleanPhrase(joinWords(columns.procedure), "procedure");
 
   const row = {
-    id: crypto.randomUUID(),
+    id: generateClientId(),
     date,
     startTime,
     endTime,
@@ -689,7 +904,7 @@ function parseTextLine(line) {
   const locationTokens = locationIndex >= 0 ? tokens.slice(locationIndex) : [];
 
   const row = {
-    id: crypto.randomUUID(),
+    id: generateClientId(),
     date,
     startTime: parseTime(rawStart),
     endTime: parseTime(rawEnd),
@@ -860,9 +1075,32 @@ function shouldAutoRefreshSummary(row) {
   return !row.summary || row.summary === row.generatedSummary;
 }
 
+function dedupeRows(rows) {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const key = [
+      row.date,
+      row.startTime,
+      row.endTime,
+      row.therapist,
+      row.location,
+      row.procedure
+    ]
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .join("|");
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
 function addEmptyRow() {
   const row = {
-    id: crypto.randomUUID(),
+    id: generateClientId(),
     date: "",
     startTime: "",
     endTime: "",
@@ -1110,16 +1348,16 @@ async function addSelectedToCalendar() {
 
   const provider = elements.calendarProvider.value;
   if (provider === "google" && state.googleCalendar.ready) {
+    const connected = await ensureGoogleCalendarConnection();
+    if (!connected) {
+      return;
+    }
+
     const shouldInsert = window.confirm(
       `Add ${rows.length} merged calendar entr${rows.length === 1 ? "y" : "ies"} to your Google Calendar?`
     );
 
     if (!shouldInsert) {
-      return;
-    }
-
-    const connected = await ensureGoogleCalendarConnection();
-    if (!connected) {
       return;
     }
 
@@ -1130,10 +1368,20 @@ async function addSelectedToCalendar() {
         `Creating ${rows.length} Google Calendar entr${rows.length === 1 ? "y" : "ies"}.`
       );
       for (const row of rows) {
-        await window.gapi.client.calendar.events.insert({
-          calendarId: "primary",
-          resource: buildGoogleCalendarEvent(row)
+        const response = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${state.googleCalendar.accessToken}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(buildGoogleCalendarEvent(row))
         });
+
+        if (!response.ok) {
+          const errorPayload = await safeReadJson(response);
+          const message = errorPayload?.error?.message || `Google Calendar returned ${response.status}`;
+          throw new Error(message);
+        }
       }
 
       setStatus(
@@ -1141,9 +1389,17 @@ async function addSelectedToCalendar() {
         "Google Calendar updated",
         `${rows.length} merged calendar entr${rows.length === 1 ? "y has" : "ies have"} been added to your Google Calendar.`
       );
+      void logAuditEvent("google_calendar_add", "success", {
+        mergedEntries: rows.length,
+        patientName: state.metadata.patientName
+      });
       return;
     } catch (error) {
       console.error(error);
+      void logAuditEvent("google_calendar_add", "error", {
+        mergedEntries: rows.length,
+        message: error instanceof Error ? error.message : "The Google Calendar request failed."
+      });
       setStatus(
         "error",
         "Google Calendar add failed",
@@ -1172,6 +1428,11 @@ async function addSelectedToCalendar() {
     "Batch calendar ready",
     `${rows.length} calendar entr${rows.length === 1 ? "y was" : "ies were"} packed into one ICS file for ${providerLabel}.`
   );
+  void logAuditEvent("calendar_batch_prepared", "success", {
+    provider,
+    mergedEntries: rows.length,
+    patientName: state.metadata.patientName
+  });
 }
 
 function buildIcs(rows, metadata) {
@@ -1328,9 +1589,19 @@ async function saveTextFile(filename, mimeType, content, options = {}) {
     if (!options.silentSuccess) {
       setStatus("success", "Download ready", `${filename} has been handed off to the browser download flow.`);
     }
+    void logAuditEvent("download_prepared", "success", {
+      filename,
+      mimeType,
+      sizeBytes: content.length
+    });
     return true;
   } catch (error) {
     console.error(error);
+    void logAuditEvent("download_prepared", "error", {
+      filename,
+      mimeType,
+      message: error instanceof Error ? error.message : "The export could not be generated."
+    });
     setStatus(
       "error",
       "Download failed",
@@ -1345,9 +1616,17 @@ async function connectGoogleCalendar() {
     setStatus(
       "error",
       "Google Calendar not configured",
-      "Set GOOGLE_CLIENT_ID and GOOGLE_API_KEY to enable direct Google Calendar insertion."
+      "Set GOOGLE_CLIENT_ID to enable Connect Google and direct calendar insertion."
     );
     return;
+  }
+
+  if (isNonLocalGoogleOrigin()) {
+    setStatus(
+      "processing",
+      "Google connection check",
+      `If Google shows invalid_request, add ${window.location.origin} to the OAuth client's Authorized JavaScript origins first.`
+    );
   }
 
   const connected = await ensureGoogleCalendarConnection();
@@ -1362,7 +1641,7 @@ async function ensureGoogleCalendarConnection() {
     return false;
   }
 
-  if (window.gapi.client.getToken()) {
+  if (hasUsableGoogleAccessToken()) {
     state.googleCalendar.connected = true;
     syncGoogleCalendarUi();
     return true;
@@ -1375,6 +1654,8 @@ async function ensureGoogleCalendarConnection() {
           reject(new Error(response.error));
           return;
         }
+        state.googleCalendar.accessToken = String(response?.access_token ?? "");
+        state.googleCalendar.tokenExpiresAt = Date.now() + (Number(response?.expires_in ?? 0) * 1000);
         state.googleCalendar.connected = true;
         resolve(response);
       };
@@ -1387,10 +1668,13 @@ async function ensureGoogleCalendarConnection() {
     console.error(error);
     state.googleCalendar.connected = false;
     syncGoogleCalendarUi();
+    const message = error instanceof Error ? error.message : "Google sign-in was not completed.";
     setStatus(
       "error",
       "Google connection failed",
-      error instanceof Error ? error.message : "Google sign-in was not completed."
+      message === "invalid_request"
+        ? `Google rejected the OAuth request. Add ${window.location.origin} to the OAuth client's Authorized JavaScript origins, then refresh and try again.`
+        : message
     );
     return false;
   }
@@ -1408,14 +1692,14 @@ function syncGoogleCalendarUi() {
 
   if (!state.googleCalendar.enabled) {
     elements.googleConnectButton.disabled = true;
-    elements.googleConnectButton.textContent = "Google setup needed";
-    elements.googleStatusPill.textContent = "Google fallback: ICS import";
+    elements.googleConnectButton.textContent = "Connect Google";
+    elements.googleStatusPill.textContent = "Server setup needed for direct add";
     return;
   }
 
   elements.googleConnectButton.disabled = false;
 
-  if (state.googleCalendar.connected || window.gapi?.client?.getToken()) {
+  if (hasUsableGoogleAccessToken()) {
     state.googleCalendar.connected = true;
     elements.googleConnectButton.textContent = "Google connected";
     elements.googleStatusPill.textContent = "Google direct add ready";
@@ -1423,7 +1707,9 @@ function syncGoogleCalendarUi() {
   }
 
   elements.googleConnectButton.textContent = "Connect Google";
-  elements.googleStatusPill.textContent = "Google direct add available";
+  elements.googleStatusPill.textContent = isNonLocalGoogleOrigin()
+    ? `Authorize ${window.location.origin} in Google OAuth`
+    : "Google direct add available";
 }
 
 function syncSelectionState() {
@@ -1443,10 +1729,15 @@ function syncSelectionState() {
 function syncCalendarActionLabel() {
   const provider = elements.calendarProvider.value;
   if (provider === "google" && state.googleCalendar.enabled) {
-    elements.addCalendarButton.textContent = "Add selected to Google Calendar";
+    elements.addCalendarButton.textContent = state.googleCalendar.connected
+      ? "Add selected to Google Calendar"
+      : "Connect Google & add selected";
     elements.selectedProviderHint.textContent = state.googleCalendar.connected
       ? "Google direct add with one confirmation"
-      : "Connect Google for direct add";
+      : "Use Connect Google to pick your account, then add everything in one go";
+  } else if (provider === "google") {
+    elements.addCalendarButton.textContent = "Prepare selected for Google Calendar";
+    elements.selectedProviderHint.textContent = "Direct Google add needs server setup; ICS import remains available";
   } else {
     const providerLabel = provider === "outlook" ? "Outlook Calendar" : "Google Calendar";
     elements.addCalendarButton.textContent = `Prepare selected for ${providerLabel}`;
@@ -1506,6 +1797,25 @@ function buildGoogleCalendarDescription(row) {
     row.procedure ? `Procedure: ${row.procedure}` : "",
     row.description ? `Details:\n${row.description}` : ""
   ].filter(Boolean).join("\n");
+}
+
+function hasUsableGoogleAccessToken() {
+  return Boolean(
+    state.googleCalendar.accessToken &&
+    (!state.googleCalendar.tokenExpiresAt || state.googleCalendar.tokenExpiresAt > Date.now() + 30_000)
+  );
+}
+
+async function safeReadJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function isNonLocalGoogleOrigin() {
+  return !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(window.location.origin);
 }
 
 function csvEscape(value) {

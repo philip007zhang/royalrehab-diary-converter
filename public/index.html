@@ -12,7 +12,7 @@
     />
     <link rel="stylesheet" href="/styles.css" />
     <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-    <script defer src="https://apis.google.com/js/api.js"></script>
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script defer src="https://accounts.google.com/gsi/client"></script>
     <script type="module" defer src="/app.js"></script>
   </head>
@@ -43,10 +43,10 @@
             </div>
 
             <label id="dropzone" class="dropzone" for="file-input">
-              <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp" />
+              <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,application/pdf,.pdf" />
               <div class="dropzone-copy">
-                <span id="dropzone-title" class="dropzone-title">Drop a schedule image here</span>
-                <span id="dropzone-subtitle" class="dropzone-subtitle">or click to browse PNG, JPG, WEBP, or BMP</span>
+                <span id="dropzone-title" class="dropzone-title">Drop a schedule image or PDF here</span>
+                <span id="dropzone-subtitle" class="dropzone-subtitle">or click to browse PNG, JPG, WEBP, BMP, or PDF</span>
               </div>
               <div id="dropzone-preview" class="dropzone-preview empty">
                 <img id="preview-image" alt="Uploaded schedule preview" />
@@ -60,7 +60,7 @@
 
             <div id="status-panel" class="status-panel idle">
               <strong id="status-title">Ready</strong>
-              <p id="status-text">Load a Royal Rehab diary image to start the OCR pass.</p>
+              <p id="status-text">Load a Royal Rehab diary image or PDF to start the OCR pass.</p>
             </div>
           </section>
 
