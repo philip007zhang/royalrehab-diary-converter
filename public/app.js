@@ -119,7 +119,7 @@ function bindEvents() {
   elements.downloadJsonButton.addEventListener("click", downloadJson);
   elements.addRowButton.addEventListener("click", addEmptyRow);
   elements.addCalendarButton.addEventListener("click", addSelectedToCalendar);
-  elements.googleConnectButton.addEventListener("click", connectGoogleCalendar);
+  elements.googleConnectButton?.addEventListener("click", connectGoogleCalendar);
 
   elements.calendarTitle.addEventListener("input", (event) => {
     state.metadata.calendarTitle = event.target.value.trim() || "Royal Rehab Schedule";
@@ -1681,35 +1681,12 @@ async function ensureGoogleCalendarConnection() {
 }
 
 function syncGoogleCalendarUi() {
-  if (elements.calendarProvider.value !== "google") {
+  if (elements.googleConnectButton) {
     elements.googleConnectButton.hidden = true;
+  }
+  if (elements.googleStatusPill) {
     elements.googleStatusPill.hidden = true;
-    return;
   }
-
-  elements.googleConnectButton.hidden = false;
-  elements.googleStatusPill.hidden = false;
-
-  if (!state.googleCalendar.enabled) {
-    elements.googleConnectButton.disabled = true;
-    elements.googleConnectButton.textContent = "Connect Google";
-    elements.googleStatusPill.textContent = "Server setup needed for direct add";
-    return;
-  }
-
-  elements.googleConnectButton.disabled = false;
-
-  if (hasUsableGoogleAccessToken()) {
-    state.googleCalendar.connected = true;
-    elements.googleConnectButton.textContent = "Google connected";
-    elements.googleStatusPill.textContent = "Google direct add ready";
-    return;
-  }
-
-  elements.googleConnectButton.textContent = "Connect Google";
-  elements.googleStatusPill.textContent = isNonLocalGoogleOrigin()
-    ? `Authorize ${window.location.origin} in Google OAuth`
-    : "Google direct add available";
 }
 
 function syncSelectionState() {
@@ -1729,19 +1706,16 @@ function syncSelectionState() {
 function syncCalendarActionLabel() {
   const provider = elements.calendarProvider.value;
   if (provider === "google" && state.googleCalendar.enabled) {
-    elements.addCalendarButton.textContent = state.googleCalendar.connected
-      ? "Add selected to Google Calendar"
-      : "Connect Google & add selected";
+    elements.addCalendarButton.textContent = "Insert directly";
     elements.selectedProviderHint.textContent = state.googleCalendar.connected
       ? "Google direct add with one confirmation"
-      : "Use Connect Google to pick your account, then add everything in one go";
+      : "Google sign-in will open during direct insert";
   } else if (provider === "google") {
-    elements.addCalendarButton.textContent = "Prepare selected for Google Calendar";
+    elements.addCalendarButton.textContent = "Insert directly";
     elements.selectedProviderHint.textContent = "Direct Google add needs server setup; ICS import remains available";
   } else {
-    const providerLabel = provider === "outlook" ? "Outlook Calendar" : "Google Calendar";
-    elements.addCalendarButton.textContent = `Prepare selected for ${providerLabel}`;
-    elements.selectedProviderHint.textContent = `${providerLabel} batch import`;
+    elements.addCalendarButton.textContent = "Insert directly";
+    elements.selectedProviderHint.textContent = "Outlook batch import";
   }
   syncGoogleCalendarUi();
 }

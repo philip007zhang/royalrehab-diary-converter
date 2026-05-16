@@ -91,31 +91,16 @@ table input,
 
 .hero-copy h1 {
   max-width: none;
-  font-size: clamp(2rem, 5vw, 3.6rem);
+  font-size: clamp(1.45rem, 3.4vw, 2.35rem);
   line-height: 0.96;
   letter-spacing: -0.04em;
 }
 
 .lede {
-  max-width: 72ch;
+  max-width: 78ch;
   margin: 14px 0 0;
   color: var(--muted);
   line-height: 1.6;
-}
-
-.eyebrow {
-  margin: 0 0 10px;
-  color: var(--warm-deep);
-  text-transform: uppercase;
-  letter-spacing: 0.16em;
-  font-size: 0.78rem;
-}
-
-.hero-chipset {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  justify-content: center;
 }
 
 .hero-chipset span,
@@ -141,6 +126,13 @@ table input,
 .audit-card {
   max-width: 960px;
   margin: 0 auto;
+}
+
+.footer-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .section-head {
@@ -500,6 +492,11 @@ tbody td:last-child {
   text-decoration: none;
 }
 
+.footer-link {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .remove-row-button {
   width: 100%;
   background: rgba(143, 53, 16, 0.1);
@@ -550,5 +547,14 @@ pre {
   .section-head {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .footer-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .footer-link {
+    margin-left: 0;
   }
 }
