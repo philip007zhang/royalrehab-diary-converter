@@ -77,7 +77,7 @@ function safeJoin(baseDir, requestPath) {
   return resolvedPath.startsWith(baseDir) ? resolvedPath : null;
 }
 
-function sendFile(response, filePath) {
+function sendFile(response, filePath, options = {}) {
   if (!existsSync(filePath) || !statSync(filePath).isFile()) {
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("Not found");
@@ -89,14 +89,23 @@ function sendFile(response, filePath) {
     "Cache-Control": "no-store"
   });
 
+  if (options.head) {
+    response.end();
+    return;
+  }
+
   createReadStream(filePath).pipe(response);
 }
 
-function sendJson(response, statusCode, payload, headers = {}) {
+function sendJson(response, statusCode, payload, headers = {}, options = {}) {
   response.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     ...headers
   });
+  if (options.head) {
+    response.end();
+    return;
+  }
   response.end(JSON.stringify(payload));
 }
 
@@ -262,7 +271,7 @@ async function handleExportCreate(request, response) {
   }
 }
 
-function handleExportDownload(response, exportId) {
+function handleExportDownload(response, exportId, options = {}) {
   cleanupExpiredExports();
   const entry = exportStore.get(exportId);
 
@@ -277,6 +286,10 @@ function handleExportDownload(response, exportId) {
     "Content-Disposition": `attachment; filename="${entry.filename.replace(/"/g, "")}"`,
     "Cache-Control": "no-store"
   });
+  if (options.head) {
+    response.end();
+    return;
+  }
   response.end(entry.content);
 }
 
@@ -384,22 +397,24 @@ function warnIfUsingDefaultAdminPassword() {
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
   const pathname = decodeURIComponent(url.pathname);
+  const isHead = request.method === "HEAD";
+  const isGetLike = request.method === "GET" || isHead;
 
-  if (request.method === "GET" && pathname === "/health") {
-    sendJson(response, 200, { ok: true });
+  if (isGetLike && pathname === "/health") {
+    sendJson(response, 200, { ok: true }, {}, { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/api/google-config") {
+  if (isGetLike && pathname === "/api/google-config") {
     sendJson(response, 200, {
       enabled: Boolean(googleCalendarConfig.clientId),
       apiKey: googleCalendarConfig.apiKey,
       clientId: googleCalendarConfig.clientId
-    });
+    }, {}, { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/api/admin/status") {
+  if (isGetLike && pathname === "/api/admin/status") {
     handleAdminStatus(request, response);
     return;
   }
@@ -414,7 +429,7 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "GET" && pathname === "/api/auditlog") {
+  if (isGetLike && pathname === "/api/auditlog") {
     handleAuditLogRequest(request, response);
     return;
   }
@@ -429,37 +444,37 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "GET" && pathname.startsWith("/downloads/")) {
+  if (isGetLike && pathname.startsWith("/downloads/")) {
     const exportId = pathname.slice("/downloads/".length);
-    handleExportDownload(response, exportId);
+    handleExportDownload(response, exportId, { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/auditlogin") {
-    sendFile(response, join(publicDir, "audit-login.html"));
+  if (isGetLike && pathname === "/auditlogin") {
+    sendFile(response, join(publicDir, "audit-login.html"), { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/auditlog") {
+  if (isGetLike && pathname === "/auditlog") {
     if (!getAdminSession(request)) {
       redirect(response, "/auditlogin");
       return;
     }
-    sendFile(response, join(publicDir, "auditlog.html"));
+    sendFile(response, join(publicDir, "auditlog.html"), { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/") {
-    sendFile(response, join(publicDir, "index.html"));
+  if (isGetLike && pathname === "/") {
+    sendFile(response, join(publicDir, "index.html"), { head: isHead });
     return;
   }
 
-  if (request.method === "GET" && pathname === "/sample/Sample-schedule.png") {
-    sendFile(response, join(rootDir, "Sample-schedule.png"));
+  if (isGetLike && pathname === "/sample/Sample-schedule.png") {
+    sendFile(response, join(rootDir, "Sample-schedule.png"), { head: isHead });
     return;
   }
 
-  if (request.method !== "GET") {
+  if (!isGetLike) {
     response.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
     response.end("Method not allowed");
     return;
@@ -472,7 +487,7 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  sendFile(response, requestedFile);
+  sendFile(response, requestedFile, { head: isHead });
 });
 
 server.listen(port, host, () => {
