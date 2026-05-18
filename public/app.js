@@ -1,9 +1,18 @@
+import {
+  buildSummary as sharedBuildSummary,
+  dedupeRows as sharedDedupeRows,
+  parseScheduleFromOcr as sharedParseScheduleFromOcr
+} from "./shared/schedule-parser.js";
+
 const state = {
   sourceFile: null,
   sourceName: "",
   previewUrl: "",
   sourceKind: "",
   sourcePageCount: 0,
+  extractionEngine: "client",
+  clientOcrAvailable: true,
+  clientOcrReason: "",
   rows: [],
   ocrText: "",
   googleCalendar: {
@@ -38,7 +47,10 @@ const elements = {
   dropzonePreview: document.querySelector("#dropzone-preview"),
   dropzoneSubtitle: document.querySelector("#dropzone-subtitle"),
   dropzoneTitle: document.querySelector("#dropzone-title"),
+  engineClient: document.querySelector("#engine-client"),
+  engineServer: document.querySelector("#engine-server"),
   extractButton: document.querySelector("#extract-btn"),
+  extractOptions: document.querySelector("#extract-options"),
   fileInput: document.querySelector("#file-input"),
   filePill: document.querySelector("#file-pill"),
   firstAppointment: document.querySelector("#first-appointment"),
@@ -54,6 +66,9 @@ const elements = {
   selectAllCheckbox: document.querySelector("#select-all-checkbox"),
   sessionsCount: document.querySelector("#sessions-count"),
   statusPanel: document.querySelector("#status-panel"),
+  statusProgress: document.querySelector("#status-progress"),
+  statusProgressBar: document.querySelector("#status-progress-bar"),
+  statusProgressLabel: document.querySelector("#status-progress-label"),
   statusText: document.querySelector("#status-text"),
   statusTitle: document.querySelector("#status-title"),
   useSampleButton: document.querySelector("#use-sample-btn")
@@ -65,9 +80,19 @@ const dateFormatter = new Intl.DateTimeFormat("en-AU", {
   year: "numeric"
 });
 
+stripNoScriptUi();
 bindEvents();
 render();
 void initGoogleCalendarSupport();
+
+function stripNoScriptUi() {
+  document.documentElement.classList.remove("no-js");
+  document.documentElement.classList.add("js-ready");
+
+  for (const element of document.querySelectorAll(".nojs-only")) {
+    element.remove();
+  }
+}
 
 async function logAuditEvent(activity, status, details = {}) {
   try {
@@ -120,6 +145,24 @@ function bindEvents() {
   elements.addRowButton.addEventListener("click", addEmptyRow);
   elements.addCalendarButton.addEventListener("click", addSelectedToCalendar);
   elements.googleConnectButton?.addEventListener("click", connectGoogleCalendar);
+  elements.engineClient?.addEventListener("change", (event) => {
+    if (event.target.checked) {
+      if (!state.clientOcrAvailable) {
+        state.extractionEngine = "server";
+        syncExtractionOptions();
+        setStatus("error", "Client-side OCR unavailable", state.clientOcrReason || "This browser cannot run client-side OCR.");
+        return;
+      }
+      state.extractionEngine = "client";
+      syncExtractionOptions();
+    }
+  });
+  elements.engineServer?.addEventListener("change", (event) => {
+    if (event.target.checked) {
+      state.extractionEngine = "server";
+      syncExtractionOptions();
+    }
+  });
 
   elements.calendarTitle.addEventListener("input", (event) => {
     state.metadata.calendarTitle = event.target.value.trim() || "Royal Rehab Schedule";
@@ -251,6 +294,7 @@ async function initGoogleCalendarSupport() {
   } catch (error) {
     console.error(error);
   } finally {
+    refreshClientOcrSupport();
     syncGoogleCalendarUi();
     syncCalendarActionLabel();
   }
@@ -358,6 +402,7 @@ async function loadFile(file) {
     sourceKind: state.sourceKind,
     pageCount: state.sourcePageCount
   });
+  refreshClientOcrSupport();
   render();
 }
 
@@ -367,86 +412,78 @@ async function extractSchedule() {
     return;
   }
 
+  if (state.extractionEngine === "server") {
+    elements.extractButton.disabled = true;
+    try {
+      await extractScheduleViaServer("Server-side extraction is running for the uploaded file.");
+    } finally {
+      elements.extractButton.disabled = false;
+      render();
+    }
+    return;
+  }
+
   if (!window.Tesseract) {
-    setStatus("error", "OCR library unavailable", "Tesseract.js did not load. Refresh the page and try again.");
+    await extractScheduleViaServer("Browser OCR is unavailable, so the file is being sent to the server for extraction.");
     return;
   }
 
   elements.extractButton.disabled = true;
-  setStatus("processing", "Preparing image", "Enhancing the schedule image for OCR.");
+  setStatus("processing", "Preparing image", "Enhancing the schedule image for OCR.", 8);
 
   let worker;
 
   try {
-    worker = await window.Tesseract.createWorker("eng", 1, {
-      logger: (message) => {
-        if (message.status && typeof message.progress === "number") {
-          const percentage = Math.round(message.progress * 100);
-          setStatus(
-            "processing",
-            "Running OCR",
-            `${capitalize(message.status)}... ${Number.isFinite(percentage) ? `${percentage}%` : ""}`.trim()
-          );
+    worker = await withTimeout(
+      window.Tesseract.createWorker("eng", 1, {
+        logger: (message) => {
+          if (message.status && typeof message.progress === "number") {
+            const percentage = Math.round(message.progress * 100);
+            setStatus(
+              "processing",
+              "Running OCR",
+              `${capitalize(message.status)}... ${Number.isFinite(percentage) ? `${percentage}%` : ""}`.trim(),
+              Number.isFinite(percentage) ? percentage : null
+            );
+          }
         }
-      }
-    });
+      }),
+      12000,
+      "Client-side OCR initialization took too long. The browser likely blocked the OCR worker."
+    );
 
     const extraction = state.sourceKind === "pdf"
-      ? await extractFromPdf(worker, state.sourceFile)
-      : await extractFromImage(worker, state.sourceFile);
-
-    state.ocrText = extraction.ocrText || "No OCR text returned.";
-    elements.ocrText.textContent = state.ocrText;
-    state.rows = extraction.rows.map((row) => ({
-      ...row,
-      generatedSummary: row.summary,
-      selected: row.selected ?? true
-    }));
-
-    state.metadata = {
-      ...state.metadata,
-      ...extraction.metadata,
-      calendarTitle: extraction.metadata.calendarTitle || state.metadata.calendarTitle || "Royal Rehab Schedule",
-      timezone: state.metadata.timezone || "Australia/Sydney"
-    };
-
-    syncMetadataInputs();
-
-    if (state.rows.length === 0) {
-      void logAuditEvent("ocr_extraction", "warning", {
-        fileName: state.sourceFile?.name ?? "",
-        rowsFound: 0,
-        sourceKind: state.sourceKind,
-        pageCount: state.sourcePageCount
-      });
-      setStatus(
-        "error",
-        "No sessions found",
-        "OCR ran, but no appointment rows were confidently parsed. You can still add rows manually."
+      ? await withTimeout(
+        extractFromPdf(worker, state.sourceFile),
+        45000,
+        "Client-side PDF OCR took too long. The browser likely blocked or stalled the OCR worker."
+      )
+      : await withTimeout(
+        extractFromImage(worker, state.sourceFile),
+        30000,
+        "Client-side image OCR took too long. The browser likely blocked or stalled the OCR worker."
       );
-    } else {
-      void logAuditEvent("ocr_extraction", "success", {
-        fileName: state.sourceFile?.name ?? "",
-        rowsFound: state.rows.length,
-        patientName: state.metadata.patientName,
-        sourceKind: state.sourceKind,
-        pageCount: state.sourcePageCount
-      });
-      setStatus(
-        "success",
-        "Extraction complete",
-        `${state.rows.length} appointment${state.rows.length === 1 ? "" : "s"} extracted. Review the rows before download.`
-      );
-    }
+
+    applyExtractionResult(extraction, "browser");
   } catch (error) {
     console.error(error);
-    void logAuditEvent("ocr_extraction", "error", {
-      fileName: state.sourceFile?.name ?? "",
-      message: error instanceof Error ? error.message : "Unexpected OCR error",
-      sourceKind: state.sourceKind,
-      pageCount: state.sourcePageCount
-    });
-    setStatus("error", "Extraction failed", error instanceof Error ? error.message : "Unexpected OCR error.");
+    markClientOcrUnavailable(
+      error instanceof Error ? error.message : "Client-side OCR is unavailable in this browser."
+    );
+    try {
+      await extractScheduleViaServer("Browser OCR failed, so the file is being sent to the server for extraction.");
+      return;
+    } catch (serverError) {
+      console.error(serverError);
+      void logAuditEvent("ocr_extraction", "error", {
+        fileName: state.sourceFile?.name ?? "",
+        message: serverError instanceof Error ? serverError.message : "Unexpected OCR error",
+        sourceKind: state.sourceKind,
+        pageCount: state.sourcePageCount,
+        engine: "server-fallback"
+      });
+      setStatus("error", "Extraction failed", serverError instanceof Error ? serverError.message : "Unexpected OCR error.");
+    }
   } finally {
     if (worker) {
       await worker.terminate().catch(() => {});
@@ -501,7 +538,8 @@ async function extractFromPdf(worker, file) {
       setStatus(
         "processing",
         "Preparing PDF",
-        `Rendering page ${pageNumber} of ${pdfDocument.numPages} for OCR.`
+        `Rendering page ${pageNumber} of ${pdfDocument.numPages} for OCR.`,
+        Math.max(10, Math.round((pageNumber / pdfDocument.numPages) * 30))
       );
 
       const page = await pdfDocument.getPage(pageNumber);
@@ -627,25 +665,7 @@ async function preprocessDrawable(source, sourceWidth, sourceHeight) {
 }
 
 function parseScheduleFromOcr(data, imageWidth, imageHeight) {
-  const words = collectOcrWords(data)
-    .map((word) => normaliseWord(word))
-    .filter((word) => word.text && Number.isFinite(word.x0) && Number.isFinite(word.y0));
-
-  const metadata = extractMetadata(words, data.text ?? "");
-  const rowsFromWords = words.length > 0 ? extractRows(words, imageWidth, imageHeight) : [];
-  const rowsFromText = extractRowsFromText(data.text ?? "");
-  const rows = rowsFromWords.length >= rowsFromText.length ? rowsFromWords : rowsFromText;
-
-  return {
-    metadata: {
-      calendarTitle: metadata.patientName
-        ? `Royal Rehab - ${metadata.patientName}`
-        : "Royal Rehab Schedule",
-      patientName: metadata.patientName,
-      mrn: metadata.mrn
-    },
-    rows
-  };
+  return sharedParseScheduleFromOcr(data, imageWidth, imageHeight, generateClientId);
 }
 
 function collectOcrWords(data) {
@@ -1064,11 +1084,7 @@ function cleanPhrase(text, type) {
 }
 
 function buildSummary(row) {
-  const parts = [row.therapist || row.procedure || "Royal Rehab appointment"];
-  if (row.location) {
-    parts.push(row.location);
-  }
-  return parts.filter(Boolean).join(" - ");
+  return sharedBuildSummary(row);
 }
 
 function shouldAutoRefreshSummary(row) {
@@ -1076,26 +1092,7 @@ function shouldAutoRefreshSummary(row) {
 }
 
 function dedupeRows(rows) {
-  const seen = new Set();
-  return rows.filter((row) => {
-    const key = [
-      row.date,
-      row.startTime,
-      row.endTime,
-      row.therapist,
-      row.location,
-      row.procedure
-    ]
-      .map((value) => String(value ?? "").trim().toLowerCase())
-      .join("|");
-
-    if (seen.has(key)) {
-      return false;
-    }
-
-    seen.add(key);
-    return true;
-  });
+  return sharedDedupeRows(rows);
 }
 
 function addEmptyRow() {
@@ -1122,6 +1119,7 @@ function render(full = true) {
   renderSelectedBatch();
   toggleDownloadButtons();
   syncSelectionState();
+  syncExtractionOptions();
   syncCalendarActionLabel();
   if (full) {
     syncMetadataInputs();
@@ -1689,6 +1687,248 @@ function syncGoogleCalendarUi() {
   }
 }
 
+function syncExtractionOptions() {
+  if (!elements.extractOptions) {
+    return;
+  }
+
+  const hasFile = Boolean(state.sourceFile);
+  elements.extractOptions.hidden = !hasFile;
+
+  if (!hasFile) {
+    if (elements.engineClient) {
+      elements.engineClient.disabled = false;
+    }
+    return;
+  }
+
+  if (elements.engineClient) {
+    elements.engineClient.disabled = !state.clientOcrAvailable;
+    elements.engineClient.title = state.clientOcrAvailable ? "" : state.clientOcrReason;
+  }
+  if (elements.engineClient) {
+    elements.engineClient.checked = state.extractionEngine === "client";
+  }
+  if (elements.engineServer) {
+    elements.engineServer.checked = state.extractionEngine === "server";
+  }
+}
+
+function refreshClientOcrSupport() {
+  const hasTesseract = Boolean(window.Tesseract?.createWorker);
+  const hasImageBitmap = typeof window.createImageBitmap === "function";
+  const needsPdf = state.sourceKind === "pdf";
+  const hasPdfJs = !needsPdf || Boolean(window.pdfjsLib);
+
+  if (hasTesseract && hasImageBitmap && hasPdfJs) {
+    state.clientOcrAvailable = true;
+    state.clientOcrReason = "";
+    return;
+  }
+
+  if (!hasTesseract) {
+    markClientOcrUnavailable("Client-side OCR is unavailable because the Tesseract script is blocked in this browser.");
+    return;
+  }
+
+  if (!hasImageBitmap) {
+    markClientOcrUnavailable("Client-side OCR is unavailable because this browser does not support image preprocessing.");
+    return;
+  }
+
+  if (needsPdf && !hasPdfJs) {
+    markClientOcrUnavailable("Client-side PDF OCR is unavailable because the PDF renderer script is blocked in this browser.");
+  }
+}
+
+function markClientOcrUnavailable(reason) {
+  state.clientOcrAvailable = false;
+  state.clientOcrReason = reason;
+  if (state.extractionEngine !== "server") {
+    state.extractionEngine = "server";
+  }
+}
+
+function applyExtractionResult(extraction, engine) {
+  state.ocrText = extraction.ocrText || "No OCR text returned.";
+  elements.ocrText.textContent = state.ocrText;
+  state.rows = extraction.rows.map((row) => ({
+    ...row,
+    generatedSummary: row.summary,
+    selected: row.selected ?? true
+  }));
+
+  state.metadata = {
+    ...state.metadata,
+    ...extraction.metadata,
+    calendarTitle: extraction.metadata.calendarTitle || state.metadata.calendarTitle || "Royal Rehab Schedule",
+    timezone: state.metadata.timezone || "Australia/Sydney"
+  };
+
+  syncMetadataInputs();
+
+  if (state.rows.length === 0) {
+    void logAuditEvent("ocr_extraction", "warning", {
+      fileName: state.sourceFile?.name ?? "",
+      rowsFound: 0,
+      sourceKind: state.sourceKind,
+      pageCount: state.sourcePageCount,
+      engine
+    });
+    setStatus(
+      "error",
+      "No sessions found",
+      "OCR ran, but no appointment rows were confidently parsed. You can still add rows manually."
+    );
+    return;
+  }
+
+  void logAuditEvent("ocr_extraction", "success", {
+    fileName: state.sourceFile?.name ?? "",
+    rowsFound: state.rows.length,
+    patientName: state.metadata.patientName,
+    sourceKind: state.sourceKind,
+    pageCount: state.sourcePageCount,
+    engine
+  });
+  setStatus(
+    "success",
+    "Extraction complete",
+    `${state.rows.length} appointment${state.rows.length === 1 ? "" : "s"} extracted. Review the rows before download.`
+  );
+}
+
+async function extractScheduleViaServer(reason) {
+  if (!state.sourceFile) {
+    throw new Error("No file loaded for server OCR.");
+  }
+
+  setStatus("processing", "Uploading to server", reason, 4);
+
+  const formData = new FormData();
+  formData.append("sourceFile", state.sourceFile, state.sourceFile.name);
+  formData.append("calendarTitle", state.metadata.calendarTitle || "Royal Rehab Schedule");
+  formData.append("timezone", state.metadata.timezone || "Australia/Sydney");
+
+  const response = await fetch("/api/server-ocr-jobs", {
+    method: "POST",
+    body: formData
+  });
+  const payload = await safeReadJson(response);
+
+  if (!response.ok) {
+    throw new Error(payload?.error || `Server OCR failed with status ${response.status}`);
+  }
+
+  const jobId = payload?.job?.id;
+  if (!jobId) {
+    throw new Error("The server OCR job did not return a tracking id.");
+  }
+
+  await pollServerOcrJob(jobId);
+}
+
+async function pollServerOcrJob(jobId) {
+  const startedAt = Date.now();
+
+  while (true) {
+    if (Date.now() - startedAt > 5 * 60 * 1000) {
+      throw new Error("Server OCR timed out before it finished.");
+    }
+
+    const response = await fetch(`/api/server-ocr-jobs/${encodeURIComponent(jobId)}`, {
+      cache: "no-store"
+    });
+    const payload = await safeReadJson(response);
+
+    if (!response.ok) {
+      throw new Error(payload?.error || `Server OCR tracking failed with status ${response.status}`);
+    }
+
+    const job = payload?.job;
+    if (!job) {
+      throw new Error("The server OCR tracking response was incomplete.");
+    }
+
+    syncServerOcrStatus(job);
+
+    if (job.pageCount) {
+      state.sourcePageCount = job.pageCount;
+    }
+
+    if (job.status === "complete") {
+      if (job.result?.pageCount) {
+        state.sourcePageCount = job.result.pageCount;
+      }
+      applyExtractionResult(job.result, "server");
+      return;
+    }
+
+    if (job.status === "error") {
+      throw new Error(job.error || job.message || "Server OCR failed.");
+    }
+
+    await wait(450);
+  }
+}
+
+function syncServerOcrStatus(job) {
+  const progress = Number.isFinite(job.progress) ? `${job.progress}%` : "";
+  const label = getServerOcrPhaseLabel(job.phase);
+  const message = [job.message, progress].filter(Boolean).join(" ");
+  setStatus("processing", label, message, Number.isFinite(job.progress) ? job.progress : null);
+}
+
+function getServerOcrPhaseLabel(phase) {
+  switch (phase) {
+    case "queued":
+      return "Queueing server OCR";
+    case "starting":
+      return "Starting server OCR";
+    case "validating":
+      return "Validating upload";
+    case "stored":
+      return "Upload received";
+    case "preparing_image":
+      return "Preparing image";
+    case "rendering_pdf":
+      return "Rendering PDF";
+    case "pdf_ready":
+      return "PDF ready for OCR";
+    case "image_ready":
+      return "Image ready for OCR";
+    case "ocr_scanning":
+      return "Scanning with OCR";
+    case "parsing_rows":
+      return "Parsing appointments";
+    case "finalizing":
+      return "Finalizing extraction";
+    case "complete":
+      return "Server OCR complete";
+    case "error":
+      return "Server OCR failed";
+    default:
+      return "Using server OCR";
+  }
+}
+
+function wait(durationMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, durationMs);
+  });
+}
+
+function withTimeout(promise, timeoutMs, message) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      window.setTimeout(() => {
+        reject(new Error(message));
+      }, timeoutMs);
+    })
+  ]);
+}
+
 function syncSelectionState() {
   if (state.rows.length === 0) {
     elements.selectAllCheckbox.checked = false;
@@ -1801,10 +2041,22 @@ function sortByYThenX(left, right) {
   return left.y0 === right.y0 ? left.x0 - right.x0 : left.y0 - right.y0;
 }
 
-function setStatus(kind, title, text) {
+function setStatus(kind, title, text, progress = null) {
   elements.statusPanel.className = `status-panel ${kind}`;
   elements.statusTitle.textContent = title;
   elements.statusText.textContent = text;
+  const hasProgress = typeof progress === "number" && Number.isFinite(progress);
+  elements.statusProgress.hidden = !hasProgress;
+  elements.statusProgressLabel.hidden = !hasProgress;
+
+  if (hasProgress) {
+    const safeProgress = Math.max(0, Math.min(100, Math.round(progress)));
+    elements.statusProgressBar.style.width = `${safeProgress}%`;
+    elements.statusProgressLabel.textContent = `${safeProgress}% complete`;
+  } else {
+    elements.statusProgressBar.style.width = "0%";
+    elements.statusProgressLabel.textContent = "0% complete";
+  }
 }
 
 function capitalize(text) {

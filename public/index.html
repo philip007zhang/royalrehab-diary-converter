@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -11,6 +11,10 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/styles.css" />
+    <script>
+      document.documentElement.classList.remove("no-js");
+      document.documentElement.classList.add("js-ready");
+    </script>
     <script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
     <script defer src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <script defer src="https://accounts.google.com/gsi/client"></script>
@@ -32,10 +36,10 @@
           <section class="card">
             <div class="section-head">
               <h2>1. Upload</h2>
-              <button id="use-sample-btn" class="ghost-button" type="button">Use bundled sample</button>
+              <button id="use-sample-btn" class="ghost-button js-only" type="button">Use bundled sample</button>
             </div>
 
-            <label id="dropzone" class="dropzone" for="file-input">
+            <label id="dropzone" class="dropzone js-only" for="file-input">
               <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,image/bmp,application/pdf,.pdf" />
               <div class="dropzone-copy">
                 <span id="dropzone-title" class="dropzone-title">Drop a schedule image or PDF here</span>
@@ -47,13 +51,56 @@
               </div>
             </label>
 
-            <div class="action-row">
+            <form id="noscript-extract-form" class="audit-form nojs-only" action="/fallback/extract" method="post" enctype="multipart/form-data">
+              <input id="noscript-file-input" class="nojs-file-input" type="file" name="sourceFile" accept="image/png,image/jpeg,image/webp,image/bmp,application/pdf,.pdf" required />
+              <label class="dropzone nojs-dropzone" for="noscript-file-input">
+                <div class="dropzone-copy">
+                  <span class="dropzone-title">Drop a schedule image or PDF here</span>
+                  <span class="dropzone-subtitle">or click to browse PNG, JPG, WEBP, BMP, or PDF</span>
+                </div>
+                <div class="dropzone-preview">
+                  <span class="nojs-placeholder-title">No file selected yet.</span>
+                  <span id="image-placeholder">Click this box to choose the schedule file.</span>
+                </div>
+              </label>
+              <div class="extract-options static">
+                <span class="extract-options-label">Extraction mode</span>
+                <label class="engine-option">
+                  <input type="radio" name="engineDisplay" value="client" disabled />
+                  <span>Client side</span>
+                </label>
+                <label class="engine-option">
+                  <input type="radio" name="engineDisplay" value="server" checked />
+                  <span>Server side</span>
+                </label>
+              </div>
+              <div class="action-row">
+                <button class="primary-button" type="submit">Extract schedule</button>
+              </div>
+            </form>
+
+            <div class="action-row js-only">
               <button id="extract-btn" class="primary-button" type="button">Extract schedule</button>
+              <div id="extract-options" class="extract-options" hidden>
+                <span class="extract-options-label">Extraction mode</span>
+                <label class="engine-option">
+                  <input id="engine-client" type="radio" name="extract-engine" value="client" checked />
+                  <span>Client side</span>
+                </label>
+                <label class="engine-option">
+                  <input id="engine-server" type="radio" name="extract-engine" value="server" />
+                  <span>Server side</span>
+                </label>
+              </div>
             </div>
 
             <div id="status-panel" class="status-panel idle">
               <strong id="status-title">Ready</strong>
               <p id="status-text">Load a Royal Rehab diary image or PDF to start the OCR pass.</p>
+              <div id="status-progress" class="status-progress" hidden>
+                <div id="status-progress-bar" class="status-progress-bar"></div>
+              </div>
+              <span id="status-progress-label" class="status-progress-label" hidden>0%</span>
             </div>
           </section>
 
@@ -65,11 +112,11 @@
             <div class="meta-grid">
               <label>
                 <span>Calendar title</span>
-                <input id="calendar-title" type="text" value="Royal Rehab Schedule" />
+                <input id="calendar-title" name="calendarTitle" form="noscript-extract-form" type="text" value="Royal Rehab Schedule" />
               </label>
               <label>
                 <span>Timezone</span>
-                <input id="calendar-timezone" type="text" value="Australia/Sydney" />
+                <input id="calendar-timezone" name="timezone" form="noscript-extract-form" type="text" value="Australia/Sydney" />
               </label>
               <label>
                 <span>Patient name</span>
@@ -87,7 +134,7 @@
           <section class="card">
             <div class="section-head">
               <h2>3. Review Extracted Sessions</h2>
-              <div class="action-row compact">
+              <div class="action-row compact js-only">
                 <label class="select-all-toggle" for="select-all-checkbox">
                   <input id="select-all-checkbox" type="checkbox" />
                   <span>Select all</span>
